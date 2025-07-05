@@ -6,10 +6,15 @@ const fs = require("fs");
 const nodemailer = require("nodemailer");
 const { CloudinaryStorage } = require("multer-storage-cloudinary");
 const cloudinary = require("./cloudinary-config");
+const connectDB = require("./config/database");
+const Image = require("./models/Image");
 require("dotenv").config();
 
 const app = express();
 const PORT = process.env.PORT || 8080;
+
+// Connect to MongoDB
+connectDB();
 
 // Configure nodemailer transporter
 const transporter = nodemailer.createTransport({
@@ -60,63 +65,50 @@ const upload = multer({
   },
 });
 
-// Store image metadata
-let imageData = {};
-const imageDataPath = path.join("/tmp", "imageData.json");
-
-// Load existing image data if available
-try {
-  if (fs.existsSync(imageDataPath)) {
-    const data = fs.readFileSync(imageDataPath, "utf8");
-    imageData = JSON.parse(data);
-  }
-} catch (error) {
-  console.error("Error loading image data:", error);
-}
-
-const saveImageData = () => {
-  try {
-    fs.writeFileSync(imageDataPath, JSON.stringify(imageData), "utf8");
-  } catch (error) {
-    console.error("Error saving image data:", error);
-  }
-};
-
 // Upload endpoint
 app.post(
   "/api/upload",
   upload.fields([{ name: "image", maxCount: 1 }]),
-  (req, res) => {
+  async (req, res) => {
     try {
       if (!req.files || !req.files.image || !req.files.image[0]) {
         return res.status(400).json({ error: "No file uploaded" });
       }
 
       const imageKey = req.body.imageKey;
+      console.log(`Received upload request - Image Key: ${imageKey}`);
+
       if (!imageKey) {
         return res.status(400).json({ error: "Image key is required" });
       }
 
       const uploadedFile = req.files.image[0];
 
-      // Store image metadata with Cloudinary URL
-      imageData[imageKey] = {
-        url: uploadedFile.path, // Cloudinary URL
-        publicId: uploadedFile.filename, // Cloudinary public ID
-        originalName: uploadedFile.originalname,
-        size: uploadedFile.size,
-        mimetype: uploadedFile.mimetype,
-        uploadedAt: new Date().toISOString(),
-      };
+      // Create or update image document in MongoDB
+      const imageDoc = await Image.findOneAndUpdate(
+        { imageKey },
+        {
+          imageKey,
+          url: uploadedFile.path, // Cloudinary URL
+          publicId: uploadedFile.filename, // Cloudinary public ID
+          originalName: uploadedFile.originalname,
+          size: uploadedFile.size,
+          mimetype: uploadedFile.mimetype,
+          uploadedAt: new Date().toISOString(),
+        },
+        { upsert: true, new: true }
+      );
 
-      // Save updated image data
-      saveImageData();
+      console.log(
+        `Image uploaded successfully - Key: ${imageKey}, URL: ${uploadedFile.path}`
+      );
 
       res.status(200).json({
         success: true,
         imageUrl: uploadedFile.path, // Return Cloudinary URL
         imageKey,
         publicId: uploadedFile.filename,
+        data: imageDoc,
       });
     } catch (error) {
       console.error("Upload error:", error);
@@ -126,42 +118,80 @@ app.post(
 );
 
 // Get all images endpoint
-app.get("/api/images", (req, res) => {
-  res.json(imageData);
+app.get("/api/images", async (req, res) => {
+  try {
+    const images = await Image.find({}).sort({ uploadedAt: -1 });
+
+    console.log(
+      `Fetching all images - Found ${images.length} images in database`
+    );
+
+    // Convert to object format for backward compatibility
+    const imageData = {};
+    images.forEach((img) => {
+      imageData[img.imageKey] = {
+        url: img.url,
+        publicId: img.publicId,
+        originalName: img.originalName,
+        size: img.size,
+        mimetype: img.mimetype,
+        uploadedAt: img.uploadedAt,
+      };
+    });
+
+    res.json(imageData);
+  } catch (error) {
+    console.error("Error fetching images:", error);
+    res.status(500).json({ error: "Failed to fetch images" });
+  }
 });
 
 // Get specific image by key
-app.get("/api/images/:key", (req, res) => {
-  const { key } = req.params;
-  if (imageData[key]) {
-    res.json(imageData[key]);
-  } else {
-    res.status(404).json({ error: "Image not found" });
+app.get("/api/images/:key", async (req, res) => {
+  try {
+    const { key } = req.params;
+    const image = await Image.findOne({ imageKey: key });
+
+    if (image) {
+      res.json({
+        url: image.url,
+        publicId: image.publicId,
+        originalName: image.originalName,
+        size: image.size,
+        mimetype: image.mimetype,
+        uploadedAt: image.uploadedAt,
+      });
+    } else {
+      res.status(404).json({ error: "Image not found" });
+    }
+  } catch (error) {
+    console.error("Error fetching image:", error);
+    res.status(500).json({ error: "Failed to fetch image" });
   }
 });
 
 // Delete image endpoint
 app.delete("/api/images/:key", async (req, res) => {
-  const { key } = req.params;
+  try {
+    const { key } = req.params;
+    const image = await Image.findOne({ imageKey: key });
 
-  if (imageData[key]) {
-    try {
+    if (image) {
       // Delete from Cloudinary if it has a publicId
-      if (imageData[key].publicId) {
-        await cloudinary.uploader.destroy(imageData[key].publicId);
+      if (image.publicId) {
+        await cloudinary.uploader.destroy(image.publicId);
       }
 
-      // Remove from our data
-      delete imageData[key];
-      saveImageData();
+      // Remove from MongoDB
+      await Image.deleteOne({ imageKey: key });
 
       res.json({ success: true, message: "Image deleted successfully" });
-    } catch (error) {
-      console.error("Error deleting image:", error);
-      res.status(500).json({ error: "Failed to delete image" });
+    } else {
+      res.status(404).json({ error: "Image not found" });
     }
-  } else {
-    res.status(404).json({ error: "Image not found" });
+  } catch (error) {
+    console.error("Error deleting image:", error);
+    res.status(500).json({ error: "Failed to delete image" });
   }
 });
 
