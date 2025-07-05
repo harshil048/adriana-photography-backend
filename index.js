@@ -326,6 +326,36 @@ app.post("/api/send-email", async (req, res) => {
   }
 });
 
+// Authentication endpoint
+app.post("/api/auth/login", (req, res) => {
+  try {
+    const { username, password } = req.body;
+
+    // Validate credentials against environment variables
+    if (
+      username === process.env.ADMIN_USERNAME &&
+      password === process.env.ADMIN_PASSWORD
+    ) {
+      res.status(200).json({
+        success: true,
+        message: "Authentication successful",
+      });
+    } else {
+      res.status(401).json({
+        success: false,
+        error: "Invalid credentials",
+      });
+    }
+  } catch (error) {
+    console.error("Authentication error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Authentication failed",
+      details: error.message,
+    });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
