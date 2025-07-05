@@ -41,7 +41,7 @@ app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 // Configure multer for file storage
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const uploadDir = path.join(__dirname, "uploads");
+    const uploadDir = path.join("/tmp", "uploads");
     // Create directory if it doesn't exist
     if (!fs.existsSync(uploadDir)) {
       fs.mkdirSync(uploadDir, { recursive: true });
@@ -71,63 +71,62 @@ const upload = multer({
 
 // Store image metadata
 let imageData = {};
-
+const imageDataPath = path.join("/tmp", "imageData.json");
 // Load existing image data if available
+
 try {
-  if (fs.existsSync(path.join(__dirname, "imageData.json"))) {
-    const data = fs.readFileSync(
-      path.join(__dirname, "imageData.json"),
-      "utf8"
-    );
+  if (fs.existsSync(imageDataPath)) {
+    const data = fs.readFileSync(imageDataPath, "utf8");
     imageData = JSON.parse(data);
   }
 } catch (error) {
   console.error("Error loading image data:", error);
 }
 
-// Save image data to file
 const saveImageData = () => {
-  fs.writeFileSync(
-    path.join(__dirname, "imageData.json"),
-    JSON.stringify(imageData),
-    "utf8"
-  );
+  fs.writeFileSync(imageDataPath, JSON.stringify(imageData), "utf8");
 };
 
 // Upload endpoint
-app.post("/api/upload", upload.single("image"), (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: "No file uploaded" });
+app.post(
+  "/api/upload",
+  upload.fields([{ name: "image", maxCount: 1 }]),
+  (req, res) => {
+    try {
+      if (!req.files || !req.files.image || !req.files.image[0]) {
+        return res.status(400).json({ error: "No file uploaded" });
+      }
+
+      const imageKey = req.body.imageKey;
+      if (!imageKey) {
+        return res.status(400).json({ error: "Image key is required" });
+      }
+
+      const uploadedFile = req.files.image[0];
+
+      // Store image metadata
+      imageData[imageKey] = {
+        url: `/uploads/${uploadedFile.filename}`,
+        originalName: uploadedFile.originalname,
+        size: uploadedFile.size,
+        mimetype: uploadedFile.mimetype,
+        uploadedAt: new Date().toISOString(),
+      };
+
+      // Save updated image data
+      saveImageData();
+
+      res.status(200).json({
+        success: true,
+        imageUrl: `/uploads/${uploadedFile.filename}`,
+        imageKey,
+      });
+    } catch (error) {
+      console.error("Upload error:", error);
+      res.status(500).json({ error: "File upload failed" });
     }
-
-    const imageKey = req.body.imageKey;
-    if (!imageKey) {
-      return res.status(400).json({ error: "Image key is required" });
-    }
-
-    // Store image metadata
-    imageData[imageKey] = {
-      url: `/uploads/${req.file.filename}`,
-      originalName: req.file.originalname,
-      size: req.file.size,
-      mimetype: req.file.mimetype,
-      uploadedAt: new Date().toISOString(),
-    };
-
-    // Save updated image data
-    saveImageData();
-
-    res.status(200).json({
-      success: true,
-      imageUrl: `/uploads/${req.file.filename}`,
-      imageKey,
-    });
-  } catch (error) {
-    console.error("Upload error:", error);
-    res.status(500).json({ error: "File upload failed" });
   }
-});
+);
 
 // Get all images endpoint
 app.get("/api/images", (req, res) => {
