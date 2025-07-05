@@ -4,6 +4,8 @@ const path = require("path");
 const cors = require("cors");
 const fs = require("fs");
 const nodemailer = require("nodemailer");
+const { CloudinaryStorage } = require("multer-storage-cloudinary");
+const cloudinary = require("./cloudinary-config");
 require("dotenv").config();
 
 const app = express();
@@ -35,30 +37,19 @@ app.use(cors());
 // Parse JSON bodies
 app.use(express.json());
 
-// Serve uploaded images statically
-app.use("/uploads", express.static(path.join("/tmp", "uploads")));
-
-// Configure multer for file storage
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const uploadDir = path.join("/tmp", "uploads");
-    // Create directory if it doesn't exist
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
-    }
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    // Create unique filename with original extension
-    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-    const ext = path.extname(file.originalname);
-    cb(null, file.fieldname + "-" + uniqueSuffix + ext);
+// Configure Cloudinary storage for multer
+const storage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: {
+    folder: "adriana-photography", // Folder in Cloudinary
+    allowed_formats: ["jpg", "jpeg", "png", "gif", "webp", "svg"],
+    transformation: [{ quality: "auto", fetch_format: "auto" }], // Optimize images
   },
 });
 
 const upload = multer({
   storage,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit (increased for higher quality)
   fileFilter: (req, file, cb) => {
     // Accept only image files
     if (file.mimetype.startsWith("image/")) {
@@ -72,8 +63,8 @@ const upload = multer({
 // Store image metadata
 let imageData = {};
 const imageDataPath = path.join("/tmp", "imageData.json");
-// Load existing image data if available
 
+// Load existing image data if available
 try {
   if (fs.existsSync(imageDataPath)) {
     const data = fs.readFileSync(imageDataPath, "utf8");
@@ -84,7 +75,11 @@ try {
 }
 
 const saveImageData = () => {
-  fs.writeFileSync(imageDataPath, JSON.stringify(imageData), "utf8");
+  try {
+    fs.writeFileSync(imageDataPath, JSON.stringify(imageData), "utf8");
+  } catch (error) {
+    console.error("Error saving image data:", error);
+  }
 };
 
 // Upload endpoint
@@ -104,9 +99,10 @@ app.post(
 
       const uploadedFile = req.files.image[0];
 
-      // Store image metadata
+      // Store image metadata with Cloudinary URL
       imageData[imageKey] = {
-        url: `/uploads/${uploadedFile.filename}`,
+        url: uploadedFile.path, // Cloudinary URL
+        publicId: uploadedFile.filename, // Cloudinary public ID
         originalName: uploadedFile.originalname,
         size: uploadedFile.size,
         mimetype: uploadedFile.mimetype,
@@ -118,8 +114,9 @@ app.post(
 
       res.status(200).json({
         success: true,
-        imageUrl: `/uploads/${uploadedFile.filename}`,
+        imageUrl: uploadedFile.path, // Return Cloudinary URL
         imageKey,
+        publicId: uploadedFile.filename,
       });
     } catch (error) {
       console.error("Upload error:", error);
@@ -144,24 +141,25 @@ app.get("/api/images/:key", (req, res) => {
 });
 
 // Delete image endpoint
-app.delete("/api/images/:key", (req, res) => {
+app.delete("/api/images/:key", async (req, res) => {
   const { key } = req.params;
 
   if (imageData[key]) {
-    // Get the filename from the URL
-    const filename = path.basename(imageData[key].url);
-    const filePath = path.join(__dirname, "uploads", filename);
+    try {
+      // Delete from Cloudinary if it has a publicId
+      if (imageData[key].publicId) {
+        await cloudinary.uploader.destroy(imageData[key].publicId);
+      }
 
-    // Delete the file if it exists
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
+      // Remove from our data
+      delete imageData[key];
+      saveImageData();
+
+      res.json({ success: true, message: "Image deleted successfully" });
+    } catch (error) {
+      console.error("Error deleting image:", error);
+      res.status(500).json({ error: "Failed to delete image" });
     }
-
-    // Remove from our data
-    delete imageData[key];
-    saveImageData();
-
-    res.json({ success: true, message: "Image deleted successfully" });
   } else {
     res.status(404).json({ error: "Image not found" });
   }
