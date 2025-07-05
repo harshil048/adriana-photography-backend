@@ -8,16 +8,7 @@ const app = express();
 const PORT = process.env.PORT || 8080;
 
 // Enable CORS with specific origins
-app.use(
-  cors({
-    origin: [
-      "https://adriana-photography.vercel.app",
-      "http://localhost:3000",
-      "http://localhost:3001",
-    ],
-    credentials: true,
-  })
-);
+app.use(cors());
 
 // Parse JSON bodies
 app.use(express.json());
@@ -157,4 +148,8 @@ app.delete("/api/images/:key", (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+});
+
+app.get("/", (req, res) => {
+  res.send("Welcome to the Image Upload API");
 });
